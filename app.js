@@ -1,12 +1,14 @@
 // @ts-nocheck
 
-const STORAGE_KEY = "notes.v2"; // v2: dodati tagovi + boje
+/* ========= Storage & State ========= */
+const STORAGE_KEY = "notes.v3"; // v3: theme + markdown + undo/redo + export-one
 let notes = load();
 let query = "";
 let sortBy = "updated"; // updated | title
 let tagFilter = "";     // "" = all
+let theme = loadTheme(); // "dark" | "light"
 
-// elements
+/* ========= Elements ========= */
 const listEl   = document.querySelector("#list");
 const addBtn   = document.querySelector("#add");
 const searchEl = document.querySelector("#search");
@@ -14,12 +16,14 @@ const sortEl   = document.querySelector("#sort");
 const tagbarEl = document.querySelector("#tagbar");
 const exportBtn= document.querySelector("#export");
 const importEl = document.querySelector("#import");
+const themeBtn = document.querySelector("#theme");
 
-// init
+/* ========= Boot ========= */
+applyTheme(theme);
 renderTagbar();
 render();
 
-// events
+/* ========= Events ========= */
 addBtn.addEventListener("click", () => {
   const n = createNote();
   notes.unshift(n);
@@ -53,7 +57,6 @@ importEl.addEventListener("change", async () => {
     const text = await file.text();
     const data = JSON.parse(text);
     if (!Array.isArray(data)) throw new Error("bad file");
-    // mali sanitize
     notes = data.map(safeNoteFromObj).filter(Boolean);
     save(); render(); renderTagbar();
   } catch {
@@ -63,7 +66,6 @@ importEl.addEventListener("change", async () => {
   }
 });
 
-// keyboard shortcuts
 document.addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() === "n" && !e.metaKey && !e.ctrlKey) {
     e.preventDefault();
@@ -75,13 +77,24 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ------- data helpers -------
+themeBtn.addEventListener("click", () => {
+  theme = (theme === "dark") ? "light" : "dark";
+  saveTheme(theme);
+  applyTheme(theme);
+});
+
+/* ========= Data helpers ========= */
 function createNote() {
   const id = crypto.randomUUID();
   const now = Date.now();
-  return { id, title: "Untitled", body: "", pinned: false, color: "slate", tags: [], updated: now };
+  return {
+    id, title: "Untitled", body: "", pinned: false, color: "slate",
+    tags: [], updated: now,
+    mode: "edit", // "edit" | "preview"
+    hist: [], // undo stack (strings)
+    fut: []   // redo stack
+  };
 }
-
 function safeNoteFromObj(o) {
   if (!o || typeof o !== "object") return null;
   return {
@@ -91,10 +104,12 @@ function safeNoteFromObj(o) {
     pinned: !!o.pinned,
     color: ["yellow","red","green","blue","purple","slate"].includes(o.color) ? o.color : "slate",
     tags: Array.isArray(o.tags) ? o.tags.map(x=>String(x).trim()).filter(Boolean) : [],
-    updated: Number(o.updated ?? Date.now())
+    updated: Number(o.updated ?? Date.now()),
+    mode: (o.mode === "preview" ? "preview" : "edit"),
+    hist: Array.isArray(o.hist) ? o.hist.map(String).slice(-50) : [],
+    fut:  Array.isArray(o.fut)  ? o.fut.map(String).slice(-50)  : []
   };
 }
-
 function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
 }
@@ -106,7 +121,20 @@ function touch(note) {
   note.updated = Date.now();
 }
 
-// ------- tags -------
+/* ========= Theme ========= */
+function loadTheme(){
+  try { return localStorage.getItem("notes.theme") || "dark"; }
+  catch { return "dark"; }
+}
+function saveTheme(t){
+  localStorage.setItem("notes.theme", t);
+}
+function applyTheme(t){
+  document.documentElement.setAttribute("data-theme", t);
+  themeBtn.textContent = `Theme: ${t[0].toUpperCase()+t.slice(1)}`;
+}
+
+/* ========= Tags ========= */
 function allTags() {
   const set = new Set();
   notes.forEach(n => n.tags.forEach(t => set.add(t)));
@@ -116,8 +144,7 @@ function renderTagbar() {
   tagbarEl.innerHTML = "";
   const all = allTags();
   if (!all.length) return;
-  const chipAll = chip("All", tagFilter==="", () => { tagFilter=""; render(); renderTagbar(); });
-  tagbarEl.appendChild(chipAll);
+  tagbarEl.appendChild(chip("All", tagFilter==="", () => { tagFilter=""; render(); renderTagbar(); }));
   all.forEach(t => {
     tagbarEl.appendChild(
       chip("#"+t, tagFilter===t, () => { tagFilter = (tagFilter===t ? "" : t); render(); renderTagbar(); })
@@ -132,12 +159,12 @@ function chip(text, active, onClick) {
   return el;
 }
 
-// ------- render -------
+/* ========= Render ========= */
 function render() {
   listEl.innerHTML = "";
   let data = [...notes];
 
-  // filter pretraga + tag
+  // filter by search and tag
   if (query) {
     data = data.filter(n =>
       n.title.toLowerCase().includes(query) ||
@@ -145,11 +172,9 @@ function render() {
       n.tags.some(t => ("#"+t).includes(query) || t.includes(query))
     );
   }
-  if (tagFilter) {
-    data = data.filter(n => n.tags.includes(tagFilter));
-  }
+  if (tagFilter) data = data.filter(n => n.tags.includes(tagFilter));
 
-  // sort: pinned on top, pa po izboru
+  // sort with pinned on top
   data.sort((a,b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     if (sortBy === "title") return a.title.localeCompare(b.title);
@@ -200,17 +225,35 @@ function renderNote(n) {
     colors.appendChild(s);
   });
 
-  const pinBtn = btn("📌", "Pin/Unpin");
-  const delBtn = btn("🗑️", "Delete");
-  actions.append(colors, pinBtn, delBtn);
+  const badge = document.createElement("span");
+  badge.className = "mode-badge";
+  badge.textContent = n.mode === "preview" ? "Preview" : "Edit";
 
+  const undoBtn   = btn("↩️","Undo");
+  const redoBtn   = btn("↪️","Redo");
+  const modeBtn   = btn("📝/👁️","Toggle edit/preview");
+  const exportOne = btn("⬇️","Export note");
+  const pinBtn    = btn("📌","Pin/Unpin");
+  const delBtn    = btn("🗑️","Delete");
+
+  actions.append(colors, badge, undoBtn, redoBtn, modeBtn, exportOne, pinBtn, delBtn);
   header.append(left, actions);
 
-  // body
+  // body or markdown preview
   const body = document.createElement("div");
   body.className = "body";
   body.contentEditable = "true";
   body.textContent = n.body;
+
+  const md = document.createElement("div");
+  md.className = "md";
+  md.style.display = "none";
+  md.innerHTML = renderMarkdown(n.body);
+
+  if (n.mode === "preview") {
+    body.style.display = "none";
+    md.style.display = "block";
+  }
 
   // meta
   const meta = document.createElement("div");
@@ -221,17 +264,73 @@ function renderNote(n) {
   count.textContent = `${n.body.length} chars`;
   meta.append(up, count);
 
-  // events
+  // events & logic
   const saveDebounced = debounce(() => {
+    pushHistory(n, n.body); // pre change already pushed in oninput below
     n.title = sanitize(title.textContent);
     n.body  = sanitize(body.textContent);
     n.tags  = parseTags(tags.textContent);
-    touch(n); save(); render(); renderTagbar();
+    md.innerHTML = renderMarkdown(n.body);
+    count.textContent = `${n.body.length} chars`;
+    touch(n); save(); renderTagbar();
   }, 300);
 
+  // track changes for undo
+  body.addEventListener("input", () => {
+    // push the snapshot only if different from last
+    const last = n.hist[n.hist.length-1];
+    if (last !== body.textContent) pushHistory(n, body.textContent);
+    saveDebounced();
+  });
+
   title.addEventListener("input", saveDebounced);
-  body.addEventListener("input", saveDebounced);
   tags.addEventListener("input", saveDebounced);
+
+  undoBtn.addEventListener("click", () => {
+    if (!n.hist.length) return;
+    const current = body.textContent;
+    const prev = n.hist.pop();
+    n.fut.push(current);
+    body.textContent = prev;
+    n.body = sanitize(prev);
+    md.innerHTML = renderMarkdown(n.body);
+    touch(n); save();
+  });
+
+  redoBtn.addEventListener("click", () => {
+    if (!n.fut.length) return;
+    const current = body.textContent;
+    const next = n.fut.pop();
+    n.hist.push(current);
+    body.textContent = next;
+    n.body = sanitize(next);
+    md.innerHTML = renderMarkdown(n.body);
+    touch(n); save();
+  });
+
+  modeBtn.addEventListener("click", () => {
+    n.mode = (n.mode === "edit") ? "preview" : "edit";
+    badge.textContent = n.mode === "preview" ? "Preview" : "Edit";
+    if (n.mode === "preview") {
+      md.innerHTML = renderMarkdown(n.body);
+      body.style.display = "none";
+      md.style.display = "block";
+    } else {
+      body.style.display = "block";
+      md.style.display = "none";
+      body.focus();
+    }
+    save();
+  });
+
+  exportOne.addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(n, null, 2)], { type:"application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const safeTitle = (n.title || "note").replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"-");
+    a.href = url; a.download = `${safeTitle || "note"}.json`;
+    a.click(); URL.revokeObjectURL(url);
+  });
 
   pinBtn.addEventListener("click", () => {
     n.pinned = !n.pinned;
@@ -244,11 +343,11 @@ function renderNote(n) {
     save(); render(); renderTagbar();
   });
 
-  card.append(header, body, meta);
+  card.append(header, body, md, meta);
   return card;
 }
 
-// helpers UI
+/* ========= Helpers ========= */
 function btn(text, aria) {
   const b = document.createElement("button");
   b.className = "icon-btn";
@@ -256,22 +355,15 @@ function btn(text, aria) {
   b.textContent = text;
   return b;
 }
-
 function focusTitle(id) {
   const all = [...document.querySelectorAll(".note .title")];
   const el = all.find(Boolean);
   el?.focus();
   document.getSelection()?.selectAllChildren(el);
 }
-
-// utils
 function parseTags(s=""){
-  return s.split(",")
-    .map(x=>x.trim().replace(/^#/, "")) // skini # ako ga unese
-    .filter(Boolean)
-    .slice(0, 10); // safety
+  return s.split(",").map(x=>x.trim().replace(/^#/, "")).filter(Boolean).slice(0, 10);
 }
-
 function timeAgo(ts) {
   const s = Math.round((Date.now() - ts) / 1000);
   if (s < 60) return `${s}s ago`;
@@ -282,12 +374,49 @@ function timeAgo(ts) {
   const d = Math.round(h / 24);
   return `${d}d ago`;
 }
-
 function sanitize(str="") {
   return str.replace(/[\u0000-\u001F\u007F]/g, "").trim();
 }
-
 function debounce(fn, ms=300) {
   let t; 
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+/* ========= Undo/Redo history ========= */
+function pushHistory(n, text){
+  if (n.hist.length && n.hist[n.hist.length-1] === text) return;
+  n.hist.push(text);
+  if (n.hist.length > 50) n.hist.shift();
+  n.fut = []; // clear redo on new typing
+}
+
+/* ========= Markdown Renderer (basic) ========= */
+/* Podržava: # ### naslove, **bold**, *italic*, `code`, ```code blocks```, -/• liste, linkove [txt](url) */
+function renderMarkdown(src=""){
+  const esc = (s)=>s
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  // code blocks ``` ```
+  src = src.replace(/```([\s\S]*?)```/g, (_,code)=>`<pre><code>${esc(code)}</code></pre>`);
+  // inline code `
+  src = src.replace(/`([^`]+)`/g, (_,code)=>`<code>${esc(code)}</code>`);
+  // headers
+  src = src.replace(/^### (.*)$/gm, "<h3>$1</h3>")
+           .replace(/^## (.*)$/gm, "<h2>$1</h2>")
+           .replace(/^# (.*)$/gm, "<h1>$1</h1>");
+  // bold / italic
+  src = src.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+           .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  // links
+  src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noopener">$1</a>`);
+  // lists
+  src = src.replace(/^(?:-|\*) (.*(?:\n(?:-|\*) .*)*)/gm, (m)=>{
+    const items = m.split(/\n/).map(x=>x.replace(/^(?:-|\*) /,'').trim()).map(li=>`<li>${li}</li>`).join("");
+    return `<ul>${items}</ul>`;
+  });
+  // paragraphs
+  const lines = src.split(/\n{2,}/).map(p=>{
+    if (/^<\/?(h\d|ul|pre)/.test(p)) return p;
+    return `<p>${p.replace(/\n/g,"<br/>")}</p>`;
+  });
+  return lines.join("\n");
 }
