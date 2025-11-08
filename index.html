@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Notes App</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Notes</h1>
+      <div class="tools">
+        <input id="search" placeholder="Search notes…" />
+        <select id="sort">
+          <option value="updated">Sort: Recently updated</option>
+          <option value="title">Sort: Title A–Z</option>
+        </select>
+        <button id="add">New note</button>
+      </div>
+    </header>
+
+    <div id="list" class="list"></div>
+
+    <footer>
+      <small>Autosave • Local only</small>
+    </footer>
+  </div>
+
+  <script src="./app.js" type="module"></script>
+</body>
+</html>
