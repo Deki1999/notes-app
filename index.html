@@ -11,14 +11,21 @@
     <header>
       <h1>Notes</h1>
       <div class="tools">
-        <input id="search" placeholder="Search notes…" />
+        <input id="search" placeholder="Search notes or #tags…" />
         <select id="sort">
           <option value="updated">Sort: Recently updated</option>
           <option value="title">Sort: Title A–Z</option>
         </select>
         <button id="add">New note</button>
+        <button id="export">Export</button>
+        <label class="import">
+          Import
+          <input id="import" type="file" accept="application/json" hidden />
+        </label>
       </div>
     </header>
+
+    <div id="tagbar" class="tagbar"></div>
 
     <div id="list" class="list"></div>
 
